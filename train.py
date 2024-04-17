@@ -1,9 +1,7 @@
 from functools import partial
 import h5py
-import pdb
 import torch
 from torch.utils.data import DataLoader
-import torch.optim as optim
 import pointnet
 import wandb
 import hydra
@@ -13,9 +11,7 @@ import matplotlib
 from torch.nn import functional as F
 from pinnstorch.utils.gradient_fn import gradient
 
-
 matplotlib.use("Agg")
-from omegaconf import DictConfig, OmegaConf
 
 config = dict(
     learing_rate=0.001,  # 5e-4,
@@ -73,8 +69,6 @@ def count_parameters(model):
 def make(config):
 
     model = pointnet.PointNetSegHead(num_points=config.num_cells, m=config.m)
-    # from net import Tnet
-    # model = Tnet()
     model = model.to(device)
     print(f"num of training parameters: {count_parameters(model)}")
     print(f"use {device} for training")
@@ -100,14 +94,6 @@ def make(config):
         params=list(model.parameters()) + [extra_variables["l1"], extra_variables["l2"]]
     )
 
-    # optimizer = optim.Adam(
-    #     list(model.parameters()) + [extra_variables["l1"], extra_variables["l2"]],
-    #     lr=config.learing_rate,
-    #     eps=1e-6,
-    # )
-    # scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=1e-6, max_lr=1e-3,
-    #                                          step_size_up=1000, cycle_momentum=False)
-
     return (
         model,
         train_loader,
@@ -118,9 +104,6 @@ def make(config):
         normalization_info,
         extra_variables,
     )
-
-
-# from torch import nn, autograd, Tensor
 
 
 def pde_loss(x, y, preds, extra_variables):
@@ -197,7 +180,7 @@ def train(
 ):
 
     wandb.watch(model, criterion, log="all", log_freq=10)
-    total_batches = len(train_loader) * config.epochs
+    # total_batches = len(train_loader) * config.epochs
 
     example_ct = 0  # number of examples seen
     batch_ct = 0
@@ -232,7 +215,7 @@ def train_log(loss, example_ct, epoch):
 
 def validate(model, val_loader, criterion, epoch, config, ni):
     model.eval()
-    losses = utils.AverageMeter("Validation Loss:", ":.4e")
+    losses = []
 
     for i, val_data in enumerate(val_loader):
         x_val = val_data[:, 0:2, : config.num_cells]
@@ -247,8 +230,8 @@ def validate(model, val_loader, criterion, epoch, config, ni):
             loss = criterion(pred, targets)
             losses.update(loss.item(), x_val.size(0))
 
-    wandb.log({"val_loss": losses.avg, "epoch": epoch})
-    print(f"val_loss: {losses.avg:.4f}, epoch: {epoch}")
+    wandb.log({"val_loss": sum(losses) / len(losses), "epoch": epoch})
+    print(f"val_loss: {sum(losses)/len(losses):.4f}, epoch: {epoch}")
 
     iid = 0
     save_path = "plots/" + str(epoch) + ".png"
