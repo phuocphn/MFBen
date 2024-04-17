@@ -1,4 +1,4 @@
-'''
+"""
 Contains classed comprising Point Net Architecture. Usage for each class can 
 be found in main() at the bottom.
 
@@ -9,7 +9,7 @@ TO use: Import Classification and Segmentation classes into desired script
 NOTE:
 This architecture does not cover Part Segmentation. Per the Point Net paper 
 that is a different architecture and is not implemented here.
-'''
+"""
 
 import torch
 import torch.nn as nn
@@ -19,12 +19,13 @@ import torch.nn.functional as F
 # ============================================================================
 # T-net (Spatial Transformer Network)
 class Tnet(nn.Module):
-    ''' T-Net learns a Transformation matrix with a specified dimension '''
+    """T-Net learns a Transformation matrix with a specified dimension"""
+
     def __init__(self, dim, num_points=2500):
         super(Tnet, self).__init__()
 
         # dimensions for transform matrix
-        self.dim = dim 
+        self.dim = dim
 
         self.conv1 = nn.Conv1d(dim, 64, kernel_size=1)
         self.conv2 = nn.Conv1d(64, 128, kernel_size=1)
@@ -41,22 +42,22 @@ class Tnet(nn.Module):
         self.bn5 = nn.BatchNorm1d(256, track_running_stats=False)
 
         self.max_pool = nn.MaxPool1d(kernel_size=num_points)
-        
+        self.act = nn.Tanh()
 
     def forward(self, x):
         bs = x.shape[0]
 
         # pass through shared MLP layers (conv1d)
-        x = self.bn1(F.relu(self.conv1(x)))
-        x = self.bn2(F.relu(self.conv2(x)))
-        x = self.bn3(F.relu(self.conv3(x)))
+        x = self.bn1(self.act(self.conv1(x)))
+        x = self.bn2(self.act(self.conv2(x)))
+        x = self.bn3(self.act(self.conv3(x)))
 
         # max pool over num points
         x = self.max_pool(x).view(bs, -1)
-        
+
         # pass through MLP
-        x = self.bn4(F.relu(self.linear1(x)))
-        x = self.bn5(F.relu(self.linear2(x)))
+        x = self.bn4(self.act(self.linear1(x)))
+        x = self.bn5(self.act(self.linear2(x)))
         x = self.linear3(x)
 
         # initialize identity matrix
@@ -72,11 +73,11 @@ class Tnet(nn.Module):
 # ============================================================================
 # Point Net Backbone (main Architecture)
 class PointNetBackbone(nn.Module):
-    '''
+    """
     This is the main portion of Point Net before the classification and segmentation heads.
-    The main function of this network is to obtain the local and global point features, 
+    The main function of this network is to obtain the local and global point features,
     which can then be passed to each of the heads to perform either classification or
-    segmentation. The forward pass through the backbone includes both T-nets and their 
+    segmentation. The forward pass through the backbone includes both T-nets and their
     transformations, the shared MLPs, and the max pool layer to obtain the global features.
 
     The forward function either returns the global or combined (local and global features)
@@ -85,15 +86,16 @@ class PointNetBackbone(nn.Module):
     orthogonal. (i.e. a rigid body transformation is an orthogonal transform and we would like
     to maintain orthogonality in high dimensional space). "An orthogonal transformations preserves
     the lengths of vectors and angles between them"
-    ''' 
+    """
+
     def __init__(self, num_points=2500, num_global_feats=1024, local_feat=True):
-        ''' Initializers:
-                num_points - number of points in point cloud
-                num_global_feats - number of Global Features for the main 
-                                   Max Pooling layer
-                local_feat - if True, forward() returns the concatenation 
-                             of the local and global features
-            '''
+        """Initializers:
+        num_points - number of points in point cloud
+        num_global_feats - number of Global Features for the main
+                           Max Pooling layer
+        local_feat - if True, forward() returns the concatenation
+                     of the local and global features
+        """
         super(PointNetBackbone, self).__init__()
 
         # if true concat local and global features
@@ -113,7 +115,7 @@ class PointNetBackbone(nn.Module):
         self.conv3 = nn.Conv1d(64, 64, kernel_size=1)
         self.conv4 = nn.Conv1d(64, 128, kernel_size=1)
         self.conv5 = nn.Conv1d(128, self.num_global_feats, kernel_size=1)
-        
+
         # batch norms for both shared MLPs
         self.bn1 = nn.BatchNorm1d(64, track_running_stats=False)
         self.bn2 = nn.BatchNorm1d(64, track_running_stats=False)
@@ -123,13 +125,13 @@ class PointNetBackbone(nn.Module):
 
         # max pool to get the global features
         self.max_pool = nn.MaxPool1d(kernel_size=num_points, return_indices=True)
+        self.act = nn.Tanh()
 
-    
     def forward(self, x):
 
         # get batch size
         bs = x.shape[0]
-        
+
         # pass through first Tnet to get transform matrix
         A_input = self.tnet1(x)
 
@@ -137,9 +139,9 @@ class PointNetBackbone(nn.Module):
         x = torch.bmm(x.transpose(2, 1), A_input).transpose(2, 1)
 
         # pass through first shared MLP
-        x = self.bn1(F.relu(self.conv1(x)))
-        x = self.bn2(F.relu(self.conv2(x)))
-        
+        x = self.bn1(self.act(self.conv1(x)))
+        x = self.bn2(self.act(self.conv2(x)))
+
         # get feature transform
         A_feat = self.tnet2(x)
 
@@ -150,9 +152,9 @@ class PointNetBackbone(nn.Module):
         local_features = x.clone()
 
         # pass through second MLP
-        x = self.bn3(F.relu(self.conv3(x)))
-        x = self.bn4(F.relu(self.conv4(x)))
-        x = self.bn5(F.relu(self.conv5(x)))
+        x = self.bn3(self.act(self.conv3(x)))
+        x = self.bn4(self.act(self.conv4(x)))
+        x = self.bn5(self.act(self.conv5(x)))
 
         # get global feature vector and critical indexes
         global_features, critical_indexes = self.max_pool(x)
@@ -160,9 +162,13 @@ class PointNetBackbone(nn.Module):
         critical_indexes = critical_indexes.view(bs, -1)
 
         if self.local_feat:
-            features = torch.cat((local_features, 
-                                  global_features.unsqueeze(-1).repeat(1, 1, self.num_points)), 
-                                  dim=1)
+            features = torch.cat(
+                (
+                    local_features,
+                    global_features.unsqueeze(-1).repeat(1, 1, self.num_points),
+                ),
+                dim=1,
+            )
 
             return features, critical_indexes, A_feat
 
@@ -173,7 +179,8 @@ class PointNetBackbone(nn.Module):
 # ============================================================================
 # Classification Head
 class PointNetClassHead(nn.Module):
-    '''' Classification Head '''
+    """' Classification Head"""
+
     def __init__(self, num_points=2500, num_global_feats=1024, k=2):
         super(PointNetClassHead, self).__init__()
 
@@ -189,15 +196,14 @@ class PointNetClassHead(nn.Module):
         self.bn1 = nn.BatchNorm1d(512, track_running_stats=False)
         self.bn2 = nn.BatchNorm1d(256, track_running_stats=False)
 
-        # The paper states that batch norm was only added to the layer 
-        # before the classication layer, but another version adds dropout  
+        # The paper states that batch norm was only added to the layer
+        # before the classication layer, but another version adds dropout
         # to the first 2 layers
         self.dropout = nn.Dropout(p=0.3)
-        
 
     def forward(self, x):
         # get global features
-        x, crit_idxs, A_feat = self.backbone(x) 
+        x, crit_idxs, A_feat = self.backbone(x)
 
         x = self.bn1(F.relu(self.linear1(x)))
         x = self.bn2(F.relu(self.linear2(x)))
@@ -211,18 +217,19 @@ class PointNetClassHead(nn.Module):
 # ============================================================================
 # Segmentation Head
 class PointNetSegHead(nn.Module):
-    ''' Segmentation Head '''
+    """Segmentation Head"""
+
     def __init__(self, num_points=2500, num_global_feats=1024, m=2):
         super(PointNetSegHead, self).__init__()
 
         self.num_points = num_points
         self.m = m
 
-        # get the backbone 
+        # get the backbone
         self.backbone = PointNetBackbone(num_points, num_global_feats, local_feat=True)
 
         # shared MLP
-        num_features = num_global_feats + 64 # local and global features
+        num_features = num_global_feats + 64  # local and global features
         self.conv1 = nn.Conv1d(num_features, 512, kernel_size=1)
         self.conv2 = nn.Conv1d(512, 256, kernel_size=1)
         self.conv3 = nn.Conv1d(256, 128, kernel_size=1)
@@ -232,44 +239,45 @@ class PointNetSegHead(nn.Module):
         self.bn1 = nn.BatchNorm1d(512, track_running_stats=False)
         self.bn2 = nn.BatchNorm1d(256, track_running_stats=False)
         self.bn3 = nn.BatchNorm1d(128, track_running_stats=False)
-        self.activ = torch.nn.Sigmoid ()
+        self.activ = torch.nn.Sigmoid()
 
+        self.act = nn.Tanh()
 
     def forward(self, x):
-        
+
         # get combined features
-        x, crit_idxs, A_feat = self.backbone(x) 
+        x, crit_idxs, A_feat = self.backbone(x)
 
         # pass through shared MLP
-        x = self.bn1(F.relu(self.conv1(x)))
-        x = self.bn2(F.relu(self.conv2(x)))
-        x = self.bn3(F.relu(self.conv3(x)))
+        x = self.bn1(self.act(self.conv1(x)))
+        x = self.bn2(self.act(self.conv2(x)))
+        x = self.bn3(self.act(self.conv3(x)))
         x = self.conv4(x)
 
         x = self.activ(x)
         x = x.transpose(2, 1)
-        
+
         return x, crit_idxs, A_feat
 
-    
+
 # ============================================================================
-# Test 
+# Test
 def main():
     test_data = torch.rand(32, 3, 2500)
 
     ## test T-net
     tnet = Tnet(dim=3)
     transform = tnet(test_data)
-    print(f'T-net output shape: {transform.shape}')
+    print(f"T-net output shape: {transform.shape}")
 
     ## test backbone
     pointfeat = PointNetBackbone(local_feat=False)
     out, _, _ = pointfeat(test_data)
-    print(f'Global Features shape: {out.shape}')
+    print(f"Global Features shape: {out.shape}")
 
     pointfeat = PointNetBackbone(local_feat=True)
     out, _, _ = pointfeat(test_data)
-    print(f'Combined Features shape: {out.shape}')
+    print(f"Combined Features shape: {out.shape}")
 
     # test on single batch (should throw error if there is an issue)
     pointfeat = PointNetBackbone(local_feat=True).eval()
@@ -278,7 +286,7 @@ def main():
     ## test classification head
     classifier = PointNetClassHead(k=5)
     out, _, _ = classifier(test_data)
-    print(f'Class output shape: {out.shape}')
+    print(f"Class output shape: {out.shape}")
 
     classifier = PointNetClassHead(k=5).eval()
     out, _, _ = classifier(test_data[0, :, :].unsqueeze(0))
@@ -286,9 +294,8 @@ def main():
     ## test segmentation head
     seg = PointNetSegHead(m=3)
     out, _, _ = seg(test_data)
-    print(f'Seg shape: {out.shape}')
+    print(f"Seg shape: {out.shape}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-
