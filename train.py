@@ -207,10 +207,15 @@ def train_batch(
     inputs = torch.cat([x, y], dim=1)
     preds, _, _ = model(inputs)
     interior_preds = preds[:, :, :]
-    loss = pde_loss(x, y, interior_preds, extra_variables) + F.mse_loss(
-        torch.masked_select(targets, ~metadata), torch.masked_select(preds, ~metadata)
-    )
-    # loss = F.mse_loss(preds, targets)
+
+    if config.training_scheme == "data-driven":
+        loss = F.mse_loss(preds, targets)
+
+    elif config.training_scheme == "physics-driven":
+        loss = pde_loss(x, y, interior_preds, extra_variables) + F.mse_loss(
+            torch.masked_select(targets, ~metadata),
+            torch.masked_select(preds, ~metadata),
+        )
     loss.backward()
     optimizer.step()
 
