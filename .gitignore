@@ -162,3 +162,6 @@ plots*
 
 wandb/
 logs*
+del
+outputs
+pretrained_models
