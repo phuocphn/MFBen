@@ -17,22 +17,26 @@ import matplotlib
 from torch.nn import functional as F
 from pinnstorch.utils.gradient_fn import gradient
 from pinnstorch.data import GeometryDataLoader
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 
 matplotlib.use("Agg")
 
-config = dict(
-    learing_rate=0.001,
-    batch_size=32,
-    epochs=5000,
-    optimizer=dict(_target_=torch.optim.Adam, lr=0.001, eps=1e-6, _partial_=True),
-    m=3,
-    scheduler=None,
-    validation_step=1,
-    num_cells=5000,
-    savefig_path="plots-server3-datadriven2/",
-    dataset_path="/home/pham/code/ds-07.hdf5",
-)
+# config = dict(
+#     learing_rate=0.001,
+#     batch_size=4,
+#     epochs=5000,
+#     optimizer=dict(_target_=torch.optim.Adam, lr=0.001, eps=1e-6, _partial_=True),
+#     m=3,
+#     scheduler=None,
+#     validation_step=1,
+#     num_cells=5000,
+#     savefig_path="plots-server3-datadriven2/",
+#     dataset_path="/home/pham/code/ds-07.hdf5",
+#     save_pth_epoch=10,
+#     save_pth_path="pretrained/mf.pth",
+# )
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -325,11 +329,17 @@ def dump_prediction(x_coord, y_coord, y_true, y_pred, loss, config, save_path):
     plt.close()
 
 
-def model_pipeline(hyperparameters):
-    with wandb.init(project="dd-cfd", config=hyperparameters):
+@hydra.main(version_base=None, config_path="conf", config_name="config")
+def model_pipeline(cfg: DictConfig):
+    # run = wandb.init(entity=cfg, project="dd-cfd")
+    print(cfg)
+    with wandb.init(
+        project="dd-cfd",
+        config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+    ):
         config = wandb.config
 
-        Path(config.savefig_path).mkdir(parents=True, exist_ok=True)
+        Path(cfg.savefig_path).mkdir(parents=True, exist_ok=True)
         # make the model, data, and optimization problem
         (
             model,
@@ -341,7 +351,7 @@ def model_pipeline(hyperparameters):
             normalization_info,
             extra_variables,
         ) = make(config)
-        print(model)
+        # print(model)
 
         train(
             model,
@@ -355,7 +365,11 @@ def model_pipeline(hyperparameters):
             extra_variables,
         )
 
-    return model
+        return model
+
+    # with wandb.init(project="dd-cfd", config=cfg):
+    #     config = wandb.config
 
 
-model_pipeline(config)
+if __name__ == "__main__":
+    model_pipeline()
