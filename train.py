@@ -2,29 +2,36 @@ from functools import partial
 import h5py
 import torch
 from torch.utils.data import DataLoader
+import pinnstorch.data
+import pinnstorch.data
 import pointnet
 import wandb
 import hydra
+import numpy as np
 from tqdm import tqdm
+from pathlib import Path
+
+
 import matplotlib.pyplot as plt
 import matplotlib
 from torch.nn import functional as F
 from pinnstorch.utils.gradient_fn import gradient
+from pinnstorch.data import GeometryDataLoader
+
 
 matplotlib.use("Agg")
 
 config = dict(
-    learing_rate=0.001,  # 5e-4,
-    batch_size=16,
+    learing_rate=0.001,
+    batch_size=32,
     epochs=5000,
-    # optimizer=dict(_target_=torch.optim.LBFGS, lr=0.001, max_iter=5000, _partial_=True),
     optimizer=dict(_target_=torch.optim.Adam, lr=0.001, eps=1e-6, _partial_=True),
-    # optimizer=dict(_target_=torch.optim.SGD, lr=0.001, _partial_=True),
     m=3,
     scheduler=None,
     validation_step=1,
-    num_cells=int(2000),
-    dataset_path="/mnt/home/pham/data-gen/MLCAD/ds-04/2dobs+fixFluidType+fixShape.hdf5",
+    num_cells=5000,
+    savefig_path="plots-server3-datadriven2/",
+    dataset_path="/home/pham/code/ds-07.hdf5",
 )
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -32,34 +39,42 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def read_dataset(path=None, split=[0.8, 0.2]):
     hdf5_file = h5py.File(path, "r")
-    data = hdf5_file["interior_data"][:, ...]
+    geo_data = hdf5_file["simdata"][:, ...]
+    metadata = hdf5_file["metadata"][:, ...]
+
+    u_min = np.min(geo_data[:, :, 0])
+    u_max = np.max(geo_data[:, :, 0])
+    v_min = np.min(geo_data[:, :, 1])
+    v_max = np.max(geo_data[:, :, 1])
+    p_min = np.min(geo_data[:, :, 2])
+    p_max = np.max(geo_data[:, :, 2])
 
     ni = {
-        "u_max": 0.0528556,
-        "u_min": -0.0104957,
-        "v_max": 0.0263741,
-        "v_min": -0.026564,
-        "p_max": 0.0014619,
-        "p_min": -0.000719237,
+        "u_max": u_max,
+        "u_min": u_min,
+        "v_max": v_max,
+        "v_min": v_min,
+        "p_max": p_max,
+        "p_min": p_min,
     }
-    u_min, u_max = ni["u_min"], ni["u_max"]
-    v_min, v_max = ni["v_min"], ni["v_max"]
-    p_min, p_max = ni["p_min"], ni["p_max"]
 
-    assert data.shape[-1] == 5
-    data[:, :, 2] = (data[:, :, 2] - u_min) / (u_max - u_min)
-    data[:, :, 3] = (data[:, :, 3] - v_min) / (v_max - v_min)
-    data[:, :, 4] = (data[:, :, 4] - p_min) / (p_max - p_min)
+    assert geo_data.shape[-1] == 5
+    geo_data[:, :, 2] = (geo_data[:, :, 2] - u_min) / (u_max - u_min)
+    geo_data[:, :, 3] = (geo_data[:, :, 3] - v_min) / (v_max - v_min)
+    geo_data[:, :, 4] = (geo_data[:, :, 4] - p_min) / (p_max - p_min)
 
-    train_len = int(split[0] * data.shape[0])
-    test_len = int(split[0] * data.shape[0])
+    train_len = int(split[0] * geo_data.shape[0])
+    test_len = int(split[0] * geo_data.shape[0])
 
-    train_set = data[:train_len, :, :]
-    test_set = data[train_len : (train_len + test_len), :, :]
+    train_set = geo_data[:train_len, :, :]
+    test_set = geo_data[train_len : (train_len + test_len), :, :]
+
+    metadata_train = metadata[:train_len, :, :]
+    metadata_test = metadata[train_len : (train_len + test_len), :, :]
     train_set = torch.permute(torch.tensor(train_set), (0, 2, 1))
     test_set = torch.permute(torch.tensor(test_set), (0, 2, 1))
 
-    return train_set, test_set, ni
+    return train_set, test_set, metadata_train, metadata_test, ni
 
 
 def count_parameters(model):
@@ -73,11 +88,28 @@ def make(config):
     print(f"num of training parameters: {count_parameters(model)}")
     print(f"use {device} for training")
 
-    train_set, test_set, normalization_info = read_dataset(config.dataset_path)
+    train_set, test_set, metadata_train, metadata_test, normalization_info = (
+        read_dataset(config.dataset_path)
+    )
 
-    train_loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True)
-    val_loader = DataLoader(test_set, batch_size=config.batch_size, shuffle=False)
-    test_loader = DataLoader(test_set[:1, :, :], batch_size=1, shuffle=False)
+    train_loader = GeometryDataLoader(
+        geometries=train_set,
+        metadata=metadata_train,
+        batch_size=config.batch_size,
+        shuffle=True,
+    )
+    val_loader = GeometryDataLoader(
+        geometries=test_set,
+        metadata=metadata_test,
+        batch_size=config.batch_size,
+        shuffle=False,
+    )
+    test_loader = GeometryDataLoader(
+        geometries=test_set[:1, :, :],
+        metadata=metadata_test[:1, :, :],
+        batch_size=1,
+        shuffle=False,
+    )
 
     criterion = torch.nn.MSELoss()
     extra_variables = dict()
@@ -144,8 +176,11 @@ def pde_loss(x, y, preds, extra_variables):
     return loss
 
 
-def train_batch(X, targets, model, optimizer, criterion, ni, extra_variables):
+def train_batch(
+    X, targets, model, optimizer, criterion, ni, extra_variables, config, metadata
+):
     X, targets = X.to(device), targets.to(device)
+    metadata = torch.tensor(metadata, dtype=torch.bool).to(device)
 
     model.train()
     optimizer.zero_grad()
@@ -158,9 +193,12 @@ def train_batch(X, targets, model, optimizer, criterion, ni, extra_variables):
     y.retain_grad()
 
     inputs = torch.cat([x, y], dim=1)
-    pred, _, _ = model(inputs)
-    loss = pde_loss(x, y, pred, extra_variables)
-
+    preds, _, _ = model(inputs)
+    interior_preds = preds[:, :, :]
+    loss = pde_loss(x, y, interior_preds, extra_variables) + F.mse_loss(
+        torch.masked_select(targets, ~metadata), torch.masked_select(preds, ~metadata)
+    )
+    # loss = F.mse_loss(preds, targets)
     loss.backward()
     optimizer.step()
 
@@ -187,14 +225,22 @@ def train(
 
     for epoch in tqdm(range(config.epochs)):
         print("Epoch: ", epoch)
-        for train_data in train_loader:
-            x_train = train_data[:, 0:2, : config.num_cells]
+        for train_data, metadata in train_loader:
+            x_train = train_data[:, 0:2, :]
 
-            targets = train_data[:, 2:, : config.num_cells]
+            targets = train_data[:, 2:, :]
             targets = torch.permute(targets, (0, 2, 1))
 
             loss = train_batch(
-                x_train, targets, model, optimizer, criterion, ni, extra_variables
+                x_train,
+                targets,
+                model,
+                optimizer,
+                criterion,
+                ni,
+                extra_variables,
+                config,
+                metadata,
             )
             example_ct += len(x_train)
             batch_ct += 1
@@ -217,9 +263,9 @@ def validate(model, val_loader, criterion, epoch, config, ni):
     model.eval()
     losses = []
 
-    for i, val_data in enumerate(val_loader):
-        x_val = val_data[:, 0:2, : config.num_cells]
-        targets = val_data[:, 2:, : config.num_cells]
+    for i, (val_data, metadata) in enumerate(val_loader):
+        x_val = val_data[:, 0:2, :]
+        targets = val_data[:, 2:, :]
         targets = torch.permute(targets, (0, 2, 1))
         x_val, targets = x_val.to(device), targets.to(device)
 
@@ -228,13 +274,13 @@ def validate(model, val_loader, criterion, epoch, config, ni):
             x_val.retain_grad()
             pred, _, _ = model(x_val)
             loss = criterion(pred, targets)
-            losses.update(loss.item(), x_val.size(0))
+            losses.append(loss.item())
 
     wandb.log({"val_loss": sum(losses) / len(losses), "epoch": epoch})
     print(f"val_loss: {sum(losses)/len(losses):.4f}, epoch: {epoch}")
 
     iid = 0
-    save_path = "plots/" + str(epoch) + ".png"
+    save_path = config.savefig_path + str(epoch) + ".png"
     dump_prediction(
         x_coord=x_val.transpose(2, 1)[iid, :, -2].cpu(),
         y_coord=x_val.transpose(2, 1)[iid, :, -1].cpu(),
@@ -283,6 +329,7 @@ def model_pipeline(hyperparameters):
     with wandb.init(project="dd-cfd", config=hyperparameters):
         config = wandb.config
 
+        Path(config.savefig_path).mkdir(parents=True, exist_ok=True)
         # make the model, data, and optimization problem
         (
             model,
