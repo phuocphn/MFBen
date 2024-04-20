@@ -46,12 +46,12 @@ def read_dataset(path=None, split=[0.8, 0.2]):
     geo_data = hdf5_file["simdata"][:, ...]
     metadata = hdf5_file["metadata"][:, ...]
 
-    u_min = np.min(geo_data[:, :, 0])
-    u_max = np.max(geo_data[:, :, 0])
-    v_min = np.min(geo_data[:, :, 1])
-    v_max = np.max(geo_data[:, :, 1])
-    p_min = np.min(geo_data[:, :, 2])
-    p_max = np.max(geo_data[:, :, 2])
+    u_min = np.min(geo_data[:, :, 2])
+    u_max = np.max(geo_data[:, :, 2])
+    v_min = np.min(geo_data[:, :, 3])
+    v_max = np.max(geo_data[:, :, 3])
+    p_min = np.min(geo_data[:, :, 4])
+    p_max = np.max(geo_data[:, :, 4])
 
     ni = {
         "u_max": u_max,
