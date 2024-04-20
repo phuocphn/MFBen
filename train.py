@@ -130,6 +130,14 @@ def make(config):
         params=list(model.parameters()) + [extra_variables["l1"], extra_variables["l2"]]
     )
 
+    if config.pretrained_model != None:
+        checkpoint = torch.load(config.pretrained_model)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        epoch = checkpoint["epoch"]
+        loss = checkpoint["loss"]
+        print(f"load checkpoint from {epoch} with loss: {loss} sucessfully !")
+
     return (
         model,
         train_loader,
@@ -256,6 +264,18 @@ def train(
         if epoch % config.validation_step == 0:
             validate(model, val_loader, criterion, epoch, config, ni)
             # predict(model, test_loader, criterion, epoch, ni)
+
+        # save weight
+        if epoch % config.save_pth_epoch == 0:
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "loss": loss,
+                },
+                config.save_pth_path,
+            )
 
 
 def train_log(loss, example_ct, epoch):
