@@ -254,7 +254,7 @@ class PointNetSegHead(nn.Module):
         x = self.bn3(self.act(self.conv3(x)))
         x = self.conv4(x)
 
-        x = self.activ(x)
+        x = self.act(x)
         x = x.transpose(2, 1)
 
         return x, crit_idxs, A_feat
