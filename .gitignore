@@ -161,3 +161,4 @@ cython_debug/
 plots*
 
 wandb/
+logs*
