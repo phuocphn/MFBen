@@ -86,8 +86,9 @@ def count_parameters(model):
 
 
 def make(config):
+    import pointnetcfd
 
-    model = pointnet.PointNetSegHead(num_points=config.num_cells, m=config.m)
+    model = pointnetcfd.PointNetSegHead(num_points=config.num_cells, m=config.m)
     model = model.to(device)
     print(f"num of training parameters: {count_parameters(model)}")
     print(f"use {device} for training")
@@ -168,23 +169,71 @@ def pde_loss(x, y, preds, extra_variables):
 
     p_x, p_y = gradient(p_pred, [x, y])
 
-    r_continuity = u_x + v_x
+    r_continuity = u_x + v_y
 
-    f_u = (
-        extra_variables["l1"] * (u_pred * u_x + v_pred * u_y)
-        + p_x
-        - extra_variables["l2"] * (u_xx + u_yy)
-    )
-    f_v = (
-        extra_variables["l1"] * (u_pred * v_x + v_pred * v_y)
-        + p_y
-        - extra_variables["l2"] * (v_xx + v_yy)
-    )
+    # f_u = (
+    #     extra_variables["l1"] * (u_pred * u_x + v_pred * u_y)
+    #     + p_x
+    #     - extra_variables["l2"] * (u_xx + u_yy)
+    # )
+    # f_v = (
+    #     extra_variables["l1"] * (u_pred * v_x + v_pred * v_y)
+    #     + p_y
+    #     - extra_variables["l2"] * (v_xx + v_yy)
+    # )
 
-    f_u_loss = F.mse_loss(f_u, torch.zeros_like(f_u))
-    f_v_loss = F.mse_loss(f_v, torch.zeros_like(f_v))
-    f_continuity = F.mse_loss(r_continuity, torch.zeros_like(r_continuity))
+    f_u = (u_pred * u_x + v_pred * u_y) + p_x - 1e-5 * (u_xx + u_yy)
+    f_v = (u_pred * v_x + v_pred * v_y) + p_y - 1e-5 * (v_xx + v_yy)
+
+    f_u_loss = F.mse_loss(f_u, torch.zeros_like(f_u).requires_grad_(True).to(device))
+    f_v_loss = F.mse_loss(f_v, torch.zeros_like(f_v).requires_grad_(True).to(device))
+    f_continuity = F.mse_loss(
+        r_continuity, torch.zeros_like(r_continuity).requires_grad_(True).to(device)
+    )
     loss = f_u_loss + f_v_loss + f_continuity
+    return loss
+
+
+def pde_lossv2(x, y, preds, extra_variables):
+    u, v, p = preds[:, :, 0:1], preds[:, :, 1:2], preds[:, :, 2:3]
+    lambda_1, lambda_2 = 0.5, 0.5
+    import pudb
+
+    # pu.db
+
+    # u = torch.autograd.grad(psi, y, torch.ones_like(x), create_graph=True)[0]
+    # v = -torch.autograd.grad(psi, x, torch.ones_like(y), create_graph=True)[0]
+
+    p_x = torch.autograd.grad(p, x, torch.ones_like(x), create_graph=True)[0].mean(0)
+    p_y = torch.autograd.grad(p, y, torch.ones_like(y), create_graph=True)[0].mean(0)
+    # pu.db
+    # u_t = torch.autograd.grad(u, t, torch.ones_like(t), create_graph=True)[0]
+    u_x = torch.autograd.grad(u, x, torch.ones_like(x), create_graph=True)[0]
+    u_y = torch.autograd.grad(u, y, torch.ones_like(y), create_graph=True)[0]
+    u_xx = torch.autograd.grad(u_x, x, torch.ones_like(x), create_graph=True)[0]
+    u_yy = torch.autograd.grad(u_y, y, torch.ones_like(y), create_graph=True)[0]
+
+    # v_t = torch.autograd.grad(v, t, torch.ones_like(t), create_graph=True)[0]
+    v_x = torch.autograd.grad(v, x, torch.ones_like(x), create_graph=True)[0]
+    v_y = torch.autograd.grad(v, y, torch.ones_like(y), create_graph=True)[0]
+    v_xx = torch.autograd.grad(v_x, x, torch.ones_like(x), create_graph=True)[0]
+    v_yy = torch.autograd.grad(v_y, y, torch.ones_like(y), create_graph=True)[0]
+
+    f_u = lambda_1 * (u * u_x + v * u_y) + p_x - lambda_2 * (u_xx + u_yy)
+    f_v = lambda_1 * (u * v_x + v * v_y) + p_y - lambda_2 * (v_xx + v_yy)
+
+    # pu.db
+    mse = torch.nn.MSELoss(reduce="none")
+    # loss_u = self.mse(u_pred, self.u)
+    # loss_v = self.mse(v_pred, self.v)
+    loss_f_u = F.mse_loss(
+        f_u, torch.zeros_like(x).requires_grad_(True).to(device), reduce="sum"
+    ) / f_u.size(0)
+    loss_f_v = F.mse_loss(
+        f_v, torch.zeros_like(x).requires_grad_(True).to(device), reduce="sum"
+    ) / f_u.size(0)
+
+    loss = loss_f_u + loss_f_v
     return loss
 
 
@@ -192,19 +241,24 @@ def train_batch(
     X, targets, model, optimizer, criterion, ni, extra_variables, config, metadata
 ):
     X, targets = X.to(device), targets.to(device)
+    # X = X[:, :, :3000]
+    X = torch.permute(X, (0, 2, 1))  # (batch_size, 2, num_cells)
+
     metadata = torch.tensor(metadata, dtype=torch.bool).to(device)
 
     model.train()
     optimizer.zero_grad()
 
-    x, y = torch.split(X, split_size_or_sections=1, dim=1)
+    x, y = torch.split(X, split_size_or_sections=1, dim=2)
     x.requires_grad = True
     x.retain_grad()
+
+    # y = torch.permute(y, (0, 2, 1))
 
     y.requires_grad = True
     y.retain_grad()
 
-    inputs = torch.cat([x, y], dim=1)
+    inputs = torch.permute(torch.cat([x, y], dim=2), (0, 2, 1))
     preds, _, _ = model(inputs)
     interior_preds = preds[:, :, :]
 
@@ -212,9 +266,16 @@ def train_batch(
         loss = F.mse_loss(preds, targets)
 
     elif config.training_scheme == "physics-driven":
-        loss = pde_loss(x, y, interior_preds, extra_variables) + F.mse_loss(
-            torch.masked_select(targets, ~metadata),
-            torch.masked_select(preds, ~metadata),
+        bc = torch.masked_select(preds, ~metadata)
+        import pudb
+
+        # pu.db
+        loss = pde_lossv2(x, y, interior_preds, extra_variables)
+        +F.mse_loss(
+            #    # torch.masked_select(targets, ~metadata),
+            #    # torch.masked_select(preds, ~metadata),
+            bc,
+            torch.zeros_like(bc).requires_grad_(True).to(device),
         )
     loss.backward()
     optimizer.step()
