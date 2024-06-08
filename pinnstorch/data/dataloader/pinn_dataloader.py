@@ -12,8 +12,20 @@ class GeometryDataLoader:
 
     def __init__(
         self,
-        geometries: torch.Tensor,
-        metadata: torch.Tensor,
+        # geometries: torch.Tensor,
+        # x,
+        # y,
+        # u,
+        # v,
+        # p,
+        # bc_x,
+        # bc_y,
+        # bc_u,
+        # bc_v,
+        # bc_p,
+        collocation_points,
+        boundary_points,
+        metadata: torch.Tensor = None,
         batch_size: int = None,
         ignore: bool = False,
         shuffle: bool = False,
@@ -26,15 +38,31 @@ class GeometryDataLoader:
         :param shuffle: Whether to shuffle the dataset (default is False)
         """
         super().__init__()
-        self.geometries = geometries
+        # self.geometries = geometries
+        # self.x = x
+        # self.y = y
+        # self.u = u
+        # self.v = v
+        # self.p = p
+
+        # self.bc_x = bc_x
+        # self.bc_y = bc_y
+        # self.bc_u = bc_u
+        # self.bc_v = bc_v
+        # self.bc_p = bc_p
+        self.collocation_points = collocation_points
+        self.boundary_points = boundary_points
         self.metadata = metadata
 
-        self.batch_size = batch_size
+        self.batch_size = None
         self.ignore = ignore
         self.shuffle = shuffle
 
-        assert self.metadata.shape[0] == self.geometries.shape[0]
-        self.dataset_size = self.metadata.shape[0]
+        # assert self.metadata.shape[0] == self.geometries.shape[0]
+        # self.dataset_size = self.metadata.shape[0]
+        self.dataset_size = self.collocation_points.x.shape[
+            0
+        ]  # len(collocation_points)  # .x.shape[0]
 
         if self.shuffle:
             self.indices = torch.randperm(self.dataset_size)
@@ -73,7 +101,24 @@ class GeometryDataLoader:
         # If batch_size is None, return the entire dataset as a single batch
         if self.batch_size is None:
             self.current_index += self.dataset_size
-            return (self.geometries, self.metadata)
+            return self.collocation_points, self.boundary_points
+            # return (
+            #     self.collocation_points[self.current_index - 1],
+            #     self.boundary_points[self.current_index - 1],
+            # )
+            # return (self.geometries, self.metadata)
+            # return (
+            #     # self.x,
+            #     # self.y,
+            #     # self.u,
+            #     # self.v,
+            #     # self.p,
+            #     # self.bc_x,
+            #     # self.bc_y,
+            #     # self.bc_u,
+            #     # self.bc_v,
+            #     # self.bc_p,
+            # )
 
         batch_indices = self.indices[
             self.current_index : self.current_index + self.batch_size

@@ -28,8 +28,8 @@ def gradient(
         dx = [dx]
 
     dy_dx = torch.autograd.grad(
-        [dy],
-        dx,
+        outputs=[dy],
+        inputs=dx,
         grad_outputs=grad_outputs,
         create_graph=create_graph,
         retain_graph=True,
@@ -41,3 +41,33 @@ def gradient(
         for i, grad in enumerate(dy_dx)
     ]
     return grads
+
+
+if __name__ == "__main__":
+
+    # BUG: the following function does not work properly.
+    """
+    def pde_loss(x, y, preds, extra_variables):
+        u_pred, v_pred, p_pred = preds[:, 0:1], preds[:, 1:2], preds[:, 2:3]
+        lambda_1, lambda_2 = 1.0, 0.02
+
+        u_x, u_y = gradient(u_pred, [x, y])
+        v_x, v_y = gradient(v_pred, [x, y])
+        p_x, p_y = gradient(p_pred, [x, y])
+
+        u_xx = gradient(u_x, x)[0]
+        u_yy = gradient(u_y, y)[0]
+        v_xx = gradient(v_x, x)[0]
+        v_yy = gradient(v_y, y)[0]
+
+        f_mass = u_x + v_y
+        f_u = lambda_1 * (u_pred * u_x + v_pred * u_y) + p_x - lambda_2 * (u_xx + u_yy)
+        f_v = lambda_1 * (u_pred * v_x + v_pred * v_y) + p_y - lambda_2 * (v_xx + v_yy)
+
+        f_u_loss = F.mse_loss(f_u, torch.zeros_like(f_u))
+        f_v_loss = F.mse_loss(f_v, torch.zeros_like(f_v))
+        f_loss = F.mse_loss(f_mass, torch.zeros_like(f_mass))
+        return f_u_loss + f_v_loss + f_loss
+    """
+
+    pass
