@@ -1,23 +1,2 @@
-learing_rate: 0.001
-batch_size: 32
-epochs: 5000
-optimizer:
-  _target_: torch.optim.Adam
-  lr: 0.001
-  eps: 0.000001
-  _partial_: true
-
-
-training_scheme: "data-driven" # physics-driven
-m: 3
-scheduler: null
-validation_step: 1
-num_cells: 5000
-savefig_path: "plots-server3-datadriven2/"
-dataset_path: "/home/pham/code/ds-07.hdf5"
-
-
-
-save_pth_epoch: 10
-save_pth_path: "pretrained/mf.pth"
-pretrained_model: null
+defaults:
+  - scheme/pinn

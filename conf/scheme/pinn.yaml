@@ -1,0 +1,39 @@
+training_scheme: "pinn"
+mode: "test"
+load_data_mode: "normal" #share
+batch_size: 32
+epochs: 50_000
+num_measurements: 128
+rho: 1.0
+mu: 0.01
+optimizer:
+  _target_: torch.optim.Adam
+  lr: 0.001
+  eps: 0.000001
+  _partial_: true
+
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+  T_max: ${scheme.epochs}
+  _partial_: true
+
+network:
+  _target_: models.base.PointNetSeg
+  hidden_layers: 20
+  layer_neurons: 32
+  num_outputs: 3
+
+output_fields: 3
+num_cells: 5000
+validation_step: 100
+mplsave_dir: "plots/" 
+dataset_dir: "sample_data/pygen/pipn-row5+data+single/"
+save_pth_epoch: ${scheme.validation_step}
+save_pth_path: "pretrained_models/pinn_baseline.pth"
+
+g_enable: false
+g_pretrained: "pretrained_models/18.5+m.unit+case2+data.baseline+5k.pth"
+pretrained_model: null
+use_lrscheduler: true
+mpl_style: "p_diff" # "u_v_p"
+T: 1
