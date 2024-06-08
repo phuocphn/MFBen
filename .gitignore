@@ -165,3 +165,8 @@ logs*
 del
 outputs
 pretrained_models
+.out
+sample_data
+multirun
+datasets
+checkpoints
