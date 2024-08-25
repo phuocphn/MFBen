@@ -12,6 +12,8 @@ optimizer:
   eps: 0.000001
   _partial_: true
 
+lr_scheduler_enable: true
+use_lrscheduler: true
 lr_scheduler:
   _target_: torch.optim.lr_scheduler.CosineAnnealingLR
   T_max: ${scheme.epochs}
@@ -29,11 +31,11 @@ validation_step: 100
 mplsave_dir: "plots/" 
 dataset_dir: "sample_data/pygen/pipn-row5+data+single/"
 save_pth_epoch: ${scheme.validation_step}
-save_pth_path: "pretrained_models/pinn_baseline.pth"
+save_pth_path: "checkpoints/pinn_baseline.pth"
 
 g_enable: false
-g_pretrained: "pretrained_models/18.5+m.unit+case2+data.baseline+5k.pth"
+g_pretrained: "pretrained_models/g_teacher/pointnetcfd.pipn-1.5k.pth"
+f_pretrained: null
 pretrained_model: null
-use_lrscheduler: true
 mpl_style: "p_diff" # "u_v_p"
 T: 1
