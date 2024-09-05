@@ -36,6 +36,7 @@ save_pth_path: "checkpoints/pinn_baseline.pth"
 g_enable: false
 g_pretrained: "pretrained_models/g_teacher/pointnetcfd.pipn-1.5k.pth"
 f_pretrained: null
+kd_num_samples: 20_000
 pretrained_model: null
 mpl_style: "p_diff" # "u_v_p"
 T: 1

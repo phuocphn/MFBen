@@ -29,7 +29,11 @@ from torch.linalg import norm
 from pathlib import Path
 
 from pinnstorch.data.domains.point_cloud import PointData
-from pinnstorch.data.dataloader import GeometryDataLoader, CFDDomain, PDAcrossCFDDomain
+from pinnstorch.data.dataloader import (
+    GeometryDataLoader,
+    CFDDomain,
+    CFDDomainWiseDataPoint,
+)
 
 # from pinnstorch.data import GeometryDataLoader
 from pinnstorch.data import create_cfd_domain, create_cfddomain_set
@@ -50,219 +54,40 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-# def to_point_data(pt_file) -> PointData:
-#     data = torch.load(pt_file)
-#     assert data.shape[0] == 5
-#     assert data.shape[1] > 100
-#     x = data[0, :].view(1, 1, -1).to(device)
-#     y = data[1, :].view(1, 1, -1).to(device)
-
-#     u = data[2, :].view(1, 1, -1).to(device)
-#     v = data[3, :].view(1, 1, -1).to(device)
-#     p = data[4, :].view(1, 1, -1).to(device)
-#     return PointData(x, y, u, v, p)
-
-
 def gradient(y, x):
     return autograd.grad(y, x, torch.ones_like(y), create_graph=True)[0]
 
 
-def pde_loss(x, y, preds, extra_variables, rho=1.0, mu=0.01):
+def calc_pde_loss(x, y, preds, extra_variables, rho=1.0, mu=0.01):
     assert preds.shape[-2] == 3
+
     u, v, p = preds[:, 0:1, :], preds[:, 1:2, :], preds[:, 2:3, :]
 
-    p_x = gradient(p, x).reshape([-1])
-    p_y = gradient(p, y).reshape([-1])
+    p_x = autograd.grad(p, x, torch.ones_like(x), create_graph=True)[0]
+    p_y = autograd.grad(p, y, torch.ones_like(y), create_graph=True)[0]
 
-    u_x = gradient(u, x).reshape([-1])
-    u_y = gradient(u, y).reshape([-1])
-    u_xx = gradient(gradient(u, x), x).reshape([-1])
-    u_yy = gradient(gradient(u, y), y).reshape([-1])
+    u_x = autograd.grad(u, x, torch.ones_like(x), create_graph=True)[0]
+    u_y = autograd.grad(u, y, torch.ones_like(y), create_graph=True)[0]
+    u_xx = autograd.grad(u_x, x, torch.ones_like(x), create_graph=True)[0]
+    u_yy = autograd.grad(u_y, y, torch.ones_like(y), create_graph=True)[0]
 
-    v_x = gradient(v, x).reshape([-1])
-    v_y = gradient(v, y).reshape([-1])
-    v_xx = gradient(gradient(v, x), x).reshape([-1])
-    v_yy = gradient(gradient(v, y), y).reshape([-1])
+    v_x = autograd.grad(v, x, torch.ones_like(x), create_graph=True)[0]
+    v_y = autograd.grad(v, y, torch.ones_like(y), create_graph=True)[0]
+    v_xx = autograd.grad(v_x, x, torch.ones_like(x), create_graph=True)[0]
+    v_yy = autograd.grad(v_y, y, torch.ones_like(y), create_graph=True)[0]
 
-    f_u = (
-        rho * (u.reshape([-1]) * u_x + v.reshape([-1]) * u_y) + p_x - mu * (u_xx + u_yy)
-    )
-    f_v = (
-        rho * (u.reshape([-1]) * v_x + v.reshape([-1]) * v_y) + p_y - mu * (v_xx + v_yy)
-    )
-
+    f_u = rho * (u * u_x + v * u_y) + p_x - mu * (u_xx + u_yy)
+    f_v = rho * (u * v_x + v * v_y) + p_y - mu * (v_xx + v_yy)
     f_mass = u_x + v_y
+
     loss_f_u = F.mse_loss(f_u, torch.zeros_like(f_u))
     loss_f_v = F.mse_loss(f_v, torch.zeros_like(f_v))
     loss_mass = F.mse_loss(f_mass, torch.zeros_like(f_mass))
-    loss = loss_f_u + loss_f_v + loss_mass
-    return loss
-
-
-from collections import namedtuple
-
-SampledData = namedtuple("SampledData", ["x", "y", "u", "v", "p"])
-
-
-def sample_data(org: PointData, k=4096) -> SampledData:
-    li = torch.tensor(random.sample(range(org.x.shape[-1]), k)).cuda()
-    x = org.x.view(-1)[li]
-    y = org.y.view(-1)[li]
-    u = org.u.view(-1)[li]
-    v = org.v.view(-1)[li]
-    p = org.p.view(-1)[li]
-    return SampledData(x, y, u, v, p)
-
-
-def construct_io(x_b, y_b, u_b, v_b, p_b):
-    inputs_x = torch.tensor(torch.stack(x_b), dtype=torch.float32, requires_grad=True)
-    inputs_y = torch.tensor(torch.stack(y_b), dtype=torch.float32, requires_grad=True)
-    _inputs = torch.cat(
-        [inputs_x.unsqueeze(1), inputs_y.unsqueeze(1)], dim=1
-    ).requires_grad_(True)
-
-    _outputs = torch.cat(
-        [
-            torch.stack(u_b).unsqueeze(1),
-            torch.stack(v_b).unsqueeze(1),
-            torch.stack(p_b).unsqueeze(1),
-        ],
-        dim=1,
-    ).requires_grad_(False)
-    return _inputs, _outputs, inputs_x, inputs_y
-
-
-def train_batch(
-    coll_points_raw,
-    boundary_points_raw,
-    inlets_raw,
-    outlets_raw,
-    obstacles_raw,
-    walls_raw,
-    model,
-    optimizer,
-    lr_scheduler,
-    criterion,
-    ni,
-    extra_variables,
-    config,
-):
-
-    model.train()
-    optimizer.zero_grad()
-
-    coll = {"x": [], "y": [], "u": [], "v": [], "p": []}
-    bc = {"x": [], "y": [], "u": [], "v": [], "p": []}
-    bc_inlets = {"x": [], "y": [], "u": [], "v": [], "p": []}
-    bc_outlets = {"x": [], "y": [], "u": [], "v": [], "p": []}
-    bc_obstacles = {"x": [], "y": [], "u": [], "v": [], "p": []}
-    bc_walls = {"x": [], "y": [], "u": [], "v": [], "p": []}
-
-    infox = {"obstacle": 262, "wall": 404, "inlet": 202, "outlet": 202}
-
-    for coll_points, boundary_points, inlets, outlets, obstacles, walls in zip(
-        coll_points_raw,
-        boundary_points_raw,
-        inlets_raw,
-        outlets_raw,
-        obstacles_raw,
-        walls_raw,
-    ):
-        data = sample_data(coll_points, k=25_000)
-        for physical_field in ["x", "y", "u", "v", "p"]:
-            coll[physical_field].append(getattr(data, physical_field))
-
-        data = sample_data(boundary_points, k=600)
-        for physical_field in ["x", "y", "u", "v", "p"]:
-            bc[physical_field].append(getattr(data, physical_field))
-
-        data = sample_data(inlets, k=infox["inlet"])
-        for physical_field in ["x", "y", "u", "v", "p"]:
-            bc_inlets[physical_field].append(getattr(data, physical_field))
-
-        data = sample_data(outlets, k=infox["outlet"])
-        for physical_field in ["x", "y", "u", "v", "p"]:
-            bc_outlets[physical_field].append(getattr(data, physical_field))
-
-        data = sample_data(obstacles, k=infox["obstacle"])
-        for physical_field in ["x", "y", "u", "v", "p"]:
-            bc_obstacles[physical_field].append(getattr(data, physical_field))
-
-        data = sample_data(walls, k=infox["wall"])
-        for physical_field in ["x", "y", "u", "v", "p"]:
-            bc_walls[physical_field].append(getattr(data, physical_field))
-
-    coll_inputs, coll_outputs, coll_x, coll_y = construct_io(
-        coll["x"], coll["y"], coll["u"], coll["v"], coll["p"]
-    )
-    bc_inputs, bc_outputs, _, _ = construct_io(
-        bc["x"], bc["y"], bc["u"], bc["v"], bc["p"]
-    )
-    bc_inlet_inputs, bc_inlet_outputs, _, _ = construct_io(
-        bc_inlets["x"], bc_inlets["y"], bc_inlets["u"], bc_inlets["v"], bc_inlets["p"]
-    )
-    bc_outlet_inputs, bc_outlet_outputs, _, _ = construct_io(
-        bc_outlets["x"],
-        bc_outlets["y"],
-        bc_outlets["u"],
-        bc_outlets["v"],
-        bc_outlets["p"],
-    )
-    bc_obstacle_inputs, bc_obstacle_outputs, _, _ = construct_io(
-        bc_obstacles["x"],
-        bc_obstacles["y"],
-        bc_obstacles["u"],
-        bc_obstacles["v"],
-        bc_obstacles["p"],
-    )
-    bc_wall_inputs, bc_wall_outputs, _, _ = construct_io(
-        bc_walls["x"],
-        bc_walls["y"],
-        bc_walls["u"],
-        bc_walls["v"],
-        bc_walls["p"],
-    )
-
-    preds = model(coll_inputs)
-    if config.training_scheme == "data":
-        loss = F.mse_loss(preds, coll_outputs) + F.mse_loss(
-            model(bc_inputs), bc_outputs
-        )
-        bc_loss = _pde_loss = collocation_loss = 0
-
-    elif config.training_scheme == "pinn":
-
-        _pde_loss = pde_loss(
-            coll_x, coll_y, preds, extra_variables, rho=config.rho, mu=config.mu
-        )
-        bc_loss = (
-            F.mse_loss(model(bc_wall_inputs)[:, :2, :], bc_wall_outputs[:, :2, :])
-            + F.mse_loss(
-                model(bc_obstacle_inputs)[:, :2, :], bc_obstacle_outputs[:, :2, :]
-            )
-            + F.mse_loss(model(bc_inlet_inputs)[:, :1, :], bc_inlet_outputs[:, :1, :])
-            + F.mse_loss(
-                model(bc_outlet_inputs)[:, 2:3, :], bc_outlet_outputs[:, 2:3, :]
-            )
-        )
-        collocation_loss = F.mse_loss(model(coll_inputs), coll_outputs)
-        loss = _pde_loss + bc_loss
-
-    loss.backward()
-    optimizer.step()
-
-    if config.use_lrscheduler:
-        lr_scheduler.step()
-    return {
-        "total_loss": loss,
-        "bc_loss": bc_loss,
-        "pde_loss": _pde_loss,
-        "collocation_loss": collocation_loss,
-    }
+    return loss_f_u, loss_f_v, loss_mass
 
 
 def train_batch_pinn_single(
-    cfddata: PDAcrossCFDDomain,
+    cfddata: CFDDomainWiseDataPoint,
     model,
     optimizer,
     lr_scheduler,
@@ -273,33 +98,6 @@ def train_batch_pinn_single(
     g,
     epoch,
 ):
-    def _custom_pde_loss(x, y, preds, extra_variables, rho, mu):
-        assert preds.shape[-2] == 3
-
-        u, v, p = preds[:, 0:1, :], preds[:, 1:2, :], preds[:, 2:3, :]
-
-        p_x = autograd.grad(p, x, torch.ones_like(x), create_graph=True)[0]
-        p_y = autograd.grad(p, y, torch.ones_like(y), create_graph=True)[0]
-
-        u_x = autograd.grad(u, x, torch.ones_like(x), create_graph=True)[0]
-        u_y = autograd.grad(u, y, torch.ones_like(y), create_graph=True)[0]
-        u_xx = autograd.grad(u_x, x, torch.ones_like(x), create_graph=True)[0]
-        u_yy = autograd.grad(u_y, y, torch.ones_like(y), create_graph=True)[0]
-
-        v_x = autograd.grad(v, x, torch.ones_like(x), create_graph=True)[0]
-        v_y = autograd.grad(v, y, torch.ones_like(y), create_graph=True)[0]
-        v_xx = autograd.grad(v_x, x, torch.ones_like(x), create_graph=True)[0]
-        v_yy = autograd.grad(v_y, y, torch.ones_like(y), create_graph=True)[0]
-
-        f_u = rho * (u * u_x + v * u_y) + p_x - mu * (u_xx + u_yy)
-        f_v = rho * (u * v_x + v * v_y) + p_y - mu * (v_xx + v_yy)
-        f_mass = u_x + v_y
-
-        loss_f_u = F.mse_loss(f_u, torch.zeros_like(f_u))
-        loss_f_v = F.mse_loss(f_v, torch.zeros_like(f_v))
-        loss_mass = F.mse_loss(f_mass, torch.zeros_like(f_mass))
-        loss = loss_f_u + loss_f_v + loss_mass
-        return loss
 
     model.train()
     optimizer.zero_grad()
@@ -314,18 +112,17 @@ def train_batch_pinn_single(
     bc_targets = boundary_points.construct_targets()
 
     preds = model(coll_inputs)
-    pde_loss = _custom_pde_loss(
+    loss_f_u, loss_f_v, loss_mass = calc_pde_loss(
         raw_x, raw_y, preds, extra_variables, rho=config.rho, mu=config.mu
     )
+    pde_loss = loss_f_u + loss_f_v + loss_mass
 
     coll_loss = F.mse_loss(model(coll_inputs), coll_targets)
     bc_loss = F.mse_loss(model(bc_inputs), bc_targets)
 
-    NUM_COLL_SAMPLES_FOR_KD = 20_000
     if config.g_enable:
         kl_loss = nn.KLDivLoss()
-
-        dd_inputs = coll_points.construct_cloud_inputs(k=NUM_COLL_SAMPLES_FOR_KD)[0]
+        dd_inputs = coll_points.construct_cloud_inputs(k=config.kd_num_samples)[0]
         with torch.no_grad():
             teacher_logits = g(dd_inputs)
 
@@ -369,12 +166,7 @@ def train_batch_pinn_single(
 
 
 def train_batch_pinn_multiple(
-    coll_points,
-    boundary_points,
-    inlets_raw,
-    outlets_raw,
-    obstacles_raw,
-    walls_raw,
+    cfddata: CFDDomainWiseDataPoint,
     model,
     optimizer,
     lr_scheduler,
@@ -382,183 +174,54 @@ def train_batch_pinn_multiple(
     ni,
     extra_variables,
     config,
+    *kwargs,
 ):
-    def _custom_pde_loss(x, y, preds, extra_variables, rho, mu):
-        assert preds.shape[-2] == 3
-
-        u, v, p = preds[:, 0:1, :], preds[:, 1:2, :], preds[:, 2:3, :]
-
-        p_x = autograd.grad(p, x, torch.ones_like(x), create_graph=True)[0]
-        p_y = autograd.grad(p, y, torch.ones_like(y), create_graph=True)[0]
-
-        u_x = autograd.grad(u, x, torch.ones_like(x), create_graph=True)[0]
-        u_y = autograd.grad(u, y, torch.ones_like(y), create_graph=True)[0]
-        u_xx = autograd.grad(u_x, x, torch.ones_like(x), create_graph=True)[0]
-        u_yy = autograd.grad(u_y, y, torch.ones_like(y), create_graph=True)[0]
-
-        v_x = autograd.grad(v, x, torch.ones_like(x), create_graph=True)[0]
-        v_y = autograd.grad(v, y, torch.ones_like(y), create_graph=True)[0]
-        v_xx = autograd.grad(v_x, x, torch.ones_like(x), create_graph=True)[0]
-        v_yy = autograd.grad(v_y, y, torch.ones_like(y), create_graph=True)[0]
-
-        f_u = rho * (u * u_x + v * u_y) + p_x - mu * (u_xx + u_yy)
-        f_v = rho * (u * v_x + v * v_y) + p_y - mu * (v_xx + v_yy)
-        f_mass = u_x + v_y
-
-        loss_f_u = F.mse_loss(f_u, torch.zeros_like(f_u))
-        loss_f_v = F.mse_loss(f_v, torch.zeros_like(f_v))
-        loss_mass = F.mse_loss(f_mass, torch.zeros_like(f_mass))
-        loss = loss_f_u + loss_f_v + loss_mass
-        return loss
 
     model.train()
     optimizer.zero_grad()
 
-    for coll, bc in zip(coll_points, boundary_points):
-        inputs, raw_x, raw_y, indices1 = coll.construct_cloud_inputs(k=2048)
+    losses = {"u": [], "v": [], "continuty": [], "boundary_cond": [], "collocation": []}
+    for coll, bc in zip(cfddata.dd_collocation, cfddata.dd_boundary):
+        inputs, raw_x, raw_y, input_indices = coll.construct_cloud_inputs(k=2048)
         preds = model(inputs)
-        import pudb
-
-        _pde_loss = _custom_pde_loss(
+        loss_f_u, loss_f_v, loss_mass = calc_pde_loss(
             raw_x, raw_y, preds, extra_variables, rho=config.rho, mu=config.mu
         )
-        _bc_inputs, _, _ = bc.construct_inputs()
-        _bc_outputs = bc.construct_targets()
+
+        bc_inputs, _, _ = bc.construct_inputs()
+        bc_targets = bc.construct_targets()
         bc_loss = F.mse_loss(
-            model(_bc_inputs),
-            _bc_outputs,
+            model(bc_inputs),
+            bc_targets,
         )
         collocation_loss = F.mse_loss(
-            model(inputs), coll.construct_cloud_targets(indices1)
+            model(inputs), coll.construct_cloud_targets(input_indices)
         )
-        loss = _pde_loss + bc_loss
-        loss.backward()
-    optimizer.step()
-    if config.use_lrscheduler:
-        lr_scheduler.step()
-    return {
-        "total_loss": loss,
-        "bc_loss": bc_loss,
-        "pde_loss": _pde_loss,
-        "collocation_loss": collocation_loss,
-    }
 
+        losses["u"].append(loss_f_u)
+        losses["v"].append(loss_f_v)
+        losses["continuty"].append(loss_mass)
+        losses["boundary_cond"].append(bc_loss)
+        losses["collocation"].append(collocation_loss)
 
-def train_batch_pinn_multiplev2(
-    coll_points,
-    boundary_points,
-    inlets_raw,
-    outlets_raw,
-    obstacles_raw,
-    walls_raw,
-    model,
-    optimizer,
-    lr_scheduler,
-    criterion,
-    ni,
-    extra_variables,
-    config,
-):
-    def _custom_pde_loss(x, y, preds, extra_variables, rho, mu):
-        assert preds.shape[-2] == 3
-
-        u, v, p = preds[:, 0:1, :], preds[:, 1:2, :], preds[:, 2:3, :]
-
-        p_x = autograd.grad(p, x, torch.ones_like(x), create_graph=True)[0]
-        p_y = autograd.grad(p, y, torch.ones_like(y), create_graph=True)[0]
-
-        u_x = autograd.grad(u, x, torch.ones_like(x), create_graph=True)[0]
-        u_y = autograd.grad(u, y, torch.ones_like(y), create_graph=True)[0]
-        u_xx = autograd.grad(u_x, x, torch.ones_like(x), create_graph=True)[0]
-        u_yy = autograd.grad(u_y, y, torch.ones_like(y), create_graph=True)[0]
-
-        v_x = autograd.grad(v, x, torch.ones_like(x), create_graph=True)[0]
-        v_y = autograd.grad(v, y, torch.ones_like(y), create_graph=True)[0]
-        v_xx = autograd.grad(v_x, x, torch.ones_like(x), create_graph=True)[0]
-        v_yy = autograd.grad(v_y, y, torch.ones_like(y), create_graph=True)[0]
-
-        f_u = rho * (u * u_x + v * u_y) + p_x - mu * (u_xx + u_yy)
-        f_v = rho * (u * v_x + v * v_y) + p_y - mu * (v_xx + v_yy)
-        f_mass = u_x + v_y
-
-        loss_f_u = F.mse_loss(f_u, torch.zeros_like(f_u))
-        loss_f_v = F.mse_loss(f_v, torch.zeros_like(f_v))
-        loss_mass = F.mse_loss(f_mass, torch.zeros_like(f_mass))
-        # loss = loss_f_u + loss_f_v + loss_mass
-        # return loss
-        return loss_f_u, loss_f_v, loss_mass
-
-    model.train()
-    optimizer.zero_grad()
-
-    ff_u = []
-    ff_v = []
-    ff_continuty = []
-    bbc = []
-    for coll, bc in zip(coll_points, boundary_points):
-        # coll_points = coll_points[0]
-        # boundary_points = boundary_points[0]
-        inputs, raw_x, raw_y, indices1 = coll.construct_cloud_inputs(k=2048)
-        preds = model(inputs)
-        import pudb
-
-        loss_f_u, loss_f_v, loss_mass = _custom_pde_loss(
-            raw_x, raw_y, preds, extra_variables, rho=config.rho, mu=config.mu
-        )
-        ff_u.append(loss_f_u)
-        ff_v.append(loss_f_v)
-        ff_continuty.append(loss_mass)
-
-        _bc_inputs, _, _ = bc.construct_inputs()
-        _bc_outputs = bc.construct_targets()
-        bc_loss = F.mse_loss(
-            model(_bc_inputs),
-            _bc_outputs,
-        )
-        bbc.append(bc_loss)
-        collocation_loss = F.mse_loss(
-            model(inputs), coll.construct_cloud_targets(indices1)
-        )
-        # loss = _pde_loss + bc_loss
-        # loss.backward()
-
-    total_pde_loss_u = ff_u[0]
-    for i in range(1, len(ff_u)):
-        total_pde_loss_u += ff_u[i]
-
-    total_pde_loss_u = total_pde_loss_u / len(ff_u)
-
-    total_pde_loss_v = ff_v[0]
-    for i in range(1, len(ff_v)):
-        total_pde_loss_v += ff_v[i]
-
-    total_pde_loss_v = total_pde_loss_v / len(ff_v)
-
-    total_pde_loss_mass = ff_continuty[0]
-    for i in range(1, len(ff_continuty)):
-        total_pde_loss_mass += ff_continuty[i]
-
-    total_pde_loss_mass = total_pde_loss_mass / len(ff_continuty)
-
-    total_bc = bbc[0]
-    for i in range(1, len(bbc)):
-        total_bc += bbc[i]
-
-    total_bc = total_bc / len(bbc)
-    bc_loss = total_bc
-
-    _pde_loss = total_pde_loss_u + total_pde_loss_v + total_pde_loss_mass
-
-    loss = _pde_loss + bc_loss
+    pde_loss = (
+        torch.mean(torch.stack(losses["u"]))
+        + torch.mean(torch.stack(losses["v"]))
+        + torch.mean(torch.stack(losses["continuty"]))
+    )
+    bc_loss = torch.mean(torch.stack(losses["boundary_cond"]))
+    collocation_loss = torch.mean(torch.stack(losses["collocation"]))
+    loss = pde_loss + bc_loss
     loss.backward()
-
     optimizer.step()
+
     if config.use_lrscheduler:
         lr_scheduler.step()
+
     return {
         "total_loss": loss,
         "bc_loss": bc_loss,
-        "pde_loss": _pde_loss,
+        "pde_loss": pde_loss,
         "collocation_loss": collocation_loss,
     }
 
@@ -625,7 +288,7 @@ def train(
     g,
     model,
     train_loader: GeometryDataLoader,
-    val_loader,
+    val_loader: GeometryDataLoader,
     test_loader,
     criterion,
     optimizer,
@@ -652,6 +315,10 @@ def train(
     CHECKPOINT_SAVE_PATH = os.path.join(
         CHECKPOINT_SAVE_DIR, f"{os.path.join(os.path.basename(config.dataset_dir))}.pth"
     )
+    if config.load_data_mode == "normal":
+        CHECKPOINT_SAVE_PATH = os.path.join(CHECKPOINT_SAVE_DIR, f"model.pth")
+        RESULT_SAVE_PATH = os.path.join(RESULT_SAVE_DIR, f"all.json")
+
     Path(RESULT_SAVE_DIR).mkdir(parents=True, exist_ok=True)
     Path(CHECKPOINT_SAVE_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -661,7 +328,7 @@ def train(
         train_fn = (
             train_batch_pinn_single
             if train_loader.dataset_size == 1
-            else train_batch_pinn_multiplev2
+            else train_batch_pinn_multiple
         )
 
     for epoch in pbar:
@@ -772,8 +439,12 @@ def validate(model, val_loader, criterion, epoch, config, ni):
             loss_dict["l2_p_error"].append(p_error)
             loss_dict["mse_error"].append(loss.item())
 
-        break
-    assert len(loss_dict["mse_error"]) == 1
+        # break
+    # print(f"{loss_dict['mse_error']=}")
+    if config.load_data_mode == "normal" and config.training_scheme == "pinn":
+        assert len(loss_dict["mse_error"]) == 8, len(loss_dict["mse_error"])
+    else:
+        assert len(loss_dict["mse_error"]) == 1, len(loss_dict["mse_error"])
     loss_dict["avg.u"] = sum(loss_dict["l2_u_error"]) / len(loss_dict["l2_u_error"])
     loss_dict["avg.v"] = sum(loss_dict["l2_v_error"]) / len(loss_dict["l2_v_error"])
     loss_dict["avg.p"] = sum(loss_dict["l2_p_error"]) / len(loss_dict["l2_p_error"])
@@ -851,7 +522,6 @@ def test(model, test_val, criterion, config):
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def model_pipeline(cfg: DictConfig):
-    # print(cfg.pretty())
     print(OmegaConf.to_yaml(cfg))
     with wandb.init(
         project="dd-cfd",
@@ -868,7 +538,13 @@ def model_pipeline(cfg: DictConfig):
             train_loader = GeometryDataLoader(
                 cfd_domains_train, config.batch_size, True
             )
-            val_loader = GeometryDataLoader(cfd_domains_val, config.batch_size, False)
+            if config.training_scheme == "pinn":
+                val_batch_size = 1
+                ignore = True
+            else:
+                val_batch_size = config.batch_size
+                ignore = False
+            val_loader = GeometryDataLoader(cfd_domains_val, val_batch_size, ignore)
             test_loader = val_loader
 
         elif config.load_data_mode == "share":

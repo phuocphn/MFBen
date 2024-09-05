@@ -22,7 +22,7 @@ class CFDDomain:
 
 
 @dataclass
-class PDAcrossCFDDomain:
+class CFDDomainWiseDataPoint:
     dd_collocation: list[PointData] = None  # len(dd_collocation) == batch_size
     dd_boundary: list[PointData] = None
     dd_wall: list[PointData] = None
@@ -212,7 +212,7 @@ class GeometryDataLoader:
         if self.ignore:
             return self.dataset_size // self.batch_size
         else:
-            return (self.dataset_size // self.dataset_size) + 1
+            return (self.dataset_size // self.batch_size) + 1
 
     def __iter__(self):
         """Initialize the data loader iterator.
@@ -223,7 +223,7 @@ class GeometryDataLoader:
         self.current_index = 0
         return self
 
-    def __next__(self) -> PDAcrossCFDDomain:
+    def __next__(self) -> CFDDomainWiseDataPoint:
         """Generate the next batch of data
 
         :return: The next batch of data, together with metadata.
@@ -241,7 +241,7 @@ class GeometryDataLoader:
                 self.current_index : self.current_index + self.batch_size
             ].tolist()
             self.current_index += self.batch_size
-            return PDAcrossCFDDomain(
+            return CFDDomainWiseDataPoint(
                 dd_collocation=self.all_concatentated_matrix["all_collocation_points"][
                     indices
                 ],
@@ -314,11 +314,6 @@ def create_cfd_domain(data_dir, device="cpu") -> CFDDomain:
             os.path.join(data_dir, f"u+boundary_points+outlet.pt"), device
         ),
     )
-    # for dirname in glob.glob(data_dir):
-    #     for region in domains.regions:
-    #         data =
-    #         domains.add(data, region)
-    # return domains
 
 
 def create_cfddomain_set(data_dirs, device="cpu") -> list[CFDDomain]:
