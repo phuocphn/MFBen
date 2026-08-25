@@ -98,8 +98,10 @@ python scripts/pipn.py     # PointNetSeg / PIPN teacher, 50k epochs
 `scripts/kd.py` and `scripts/non-kd.py` sweep hidden layers `[3, 6, 10]` ×
 neurons `[32, 64, 128]` over the 8 test geometries at 5000 epochs. The
 `*_extra.py` variants run the same thing on the `extra/` shapes. Distillation
-loads its teacher from `scheme.g_pretrained`, which must exist before
-`scripts/kd.py` is useful.
+loads its frozen teacher from `scheme.g_pretrained`, which defaults to the
+`pretrained_models/g_teacher/pointnetcfd.pipn-1.5k.pth` checkpoint committed
+here (PointNetSeg, 866,947 params, saved at epoch 4900), so `scripts/kd.py`
+runs straight from a fresh clone.
 
 Checkpoints go to `checkpoints/`, plots and per-epoch CSV logs to the directory
 given by `scheme.mplsave_dir`.
@@ -131,6 +133,11 @@ the `h{3,6,10}.n{32,64,128}` grid and `pointnetcfd` where present.
 ## Notes
 
 `.gitignore` deliberately excludes `checkpoints/`, `plots*`, `outputs/`,
-`multirun/`, `datasets/`, `pretrained_models/` and `wandb/`. The
-`training_logs.csv` files are tracked despite living under `plots/` because they
-are the only record of the loss curves; they were force-added and stay tracked.
+`multirun/`, `datasets/`, `sample_data/` and `wandb/`. Two exceptions are
+tracked on purpose:
+
+- `results/MLCAD_submission/plots/**/training_logs.csv` — force-added past the
+  `plots*` rule, since they are the only record of the loss curves.
+- `pretrained_models/g_teacher/` — admitted by an explicit `!` rule so the KD
+  sweep is runnable out of the box. The other checkpoints under
+  `pretrained_models/` remain ignored.
