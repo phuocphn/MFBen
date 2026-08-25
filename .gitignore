@@ -164,7 +164,9 @@ wandb/
 logs*
 del
 outputs
-pretrained_models
+# Teacher checkpoint is tracked (needed by scripts/kd.py); other weights are not
+pretrained_models/*
+!pretrained_models/g_teacher/
 .out
 sample_data
 multirun
